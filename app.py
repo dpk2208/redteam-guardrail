@@ -80,6 +80,29 @@ def hostname_is_bad_literal(hostname):
     )
 
 
+import socket
+
+def resolved_ips_are_safe(hostname):
+    """Resolve DNS and check every returned address is public. Guards
+    against a hostname that passes the allowlist by name but actually
+    resolves (via rebinding or a sandboxed test override) to a private/
+    loopback/link-local/metadata address."""
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except Exception:
+        return False
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return bool(infos)
+
+
 def check_fetch_url(url, _hops=0):
     try:
         parts = urlsplit(url)
@@ -87,11 +110,23 @@ def check_fetch_url(url, _hops=0):
     except Exception:
         return "block", "URL could not be parsed.", None
 
+    if parts.scheme not in ("http", "https"):
+        return "block", f"Scheme '{parts.scheme}' is not permitted.", None
+
+    # Any userinfo syntax (user:pass@host) is rejected outright, regardless
+    # of what host it ultimately resolves to -- this is a known confusion
+    # vector and never legitimately needed for these two static sites.
+    if parts.username is not None or parts.password is not None:
+        return "block", "URLs containing userinfo (user:pass@host) syntax are never permitted.", None
+
     if not hostname or hostname_is_bad_literal(hostname):
         return "block", f"Host '{hostname}' is a private/loopback/reserved address.", None
 
     if hostname not in ALLOWED_HOSTS:
         return "block", f"Host '{hostname}' is not on the exact allowlist.", None
+
+    if not resolved_ips_are_safe(hostname):
+        return "block", f"Host '{hostname}' resolved to a disallowed address.", None
 
     try:
         resp = requests.get(url, timeout=8, allow_redirects=False)
@@ -103,10 +138,15 @@ def check_fetch_url(url, _hops=0):
         if _hops >= 3:
             return "block", "Too many redirects.", None
         try:
-            loc_host = (urlsplit(location).hostname or "").lower()
+            loc_parts = urlsplit(location)
+            loc_host = (loc_parts.hostname or "").lower()
         except Exception:
             return "block", "Redirect target could not be parsed.", None
-        if not loc_host or hostname_is_bad_literal(loc_host) or loc_host not in ALLOWED_HOSTS:
+        if loc_parts.username is not None or loc_parts.password is not None:
+            return "block", "Redirect target contains userinfo syntax.", None
+        if (not loc_host or hostname_is_bad_literal(loc_host)
+                or loc_host not in ALLOWED_HOSTS
+                or not resolved_ips_are_safe(loc_host)):
             return "block", f"Redirect target host '{loc_host}' is not permitted.", None
         return check_fetch_url(location, _hops + 1)
 
