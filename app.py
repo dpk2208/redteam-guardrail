@@ -66,6 +66,9 @@ def check_read_file(path):
 # ---------------------------------------------------------------------
 # fetch_url policy
 # ---------------------------------------------------------------------
+CGNAT_RANGE = ipaddress.ip_network("100.64.0.0/10")
+
+
 def hostname_is_bad_literal(hostname):
     """Defensive check: block raw IP literals that are private/loopback/
     link-local/reserved, even though our allowlist only contains DNS
@@ -74,6 +77,8 @@ def hostname_is_bad_literal(hostname):
         ip = ipaddress.ip_address(hostname)
     except ValueError:
         return False
+    if isinstance(ip, ipaddress.IPv4Address) and ip in CGNAT_RANGE:
+        return True
     return (
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_reserved or ip.is_multicast or ip.is_unspecified
@@ -96,6 +101,8 @@ def resolved_ips_are_safe(hostname):
         try:
             ip = ipaddress.ip_address(addr)
         except ValueError:
+            return False
+        if isinstance(ip, ipaddress.IPv4Address) and ip in CGNAT_RANGE:
             return False
         if (ip.is_private or ip.is_loopback or ip.is_link_local
                 or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
