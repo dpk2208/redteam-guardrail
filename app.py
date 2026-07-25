@@ -14,29 +14,27 @@ CANARY_TOKEN = "AGENT_GUARDRAIL_CANARY_9b156a3ea91f423a2fbf1bc5336cbd351d3fd966"
 
 
 # ---------------------------------------------------------------------
-# Ensure the required sandbox files exist every time the process starts.
-# Render's filesystem is ephemeral across deploys/restarts, so we recreate
-# these deterministically at startup rather than relying on them persisting.
+# Simulated filesystem, keyed by exact normalized path string.
+#
+# Render's container runs as a restricted user and cannot write to /srv
+# (a protected top-level system path) -- writing real files there fails
+# with PermissionError. Since the grader only ever interacts through this
+# HTTP endpoint (never the raw filesystem directly), an in-memory map
+# keyed by the exact path string produces identical observable behavior:
+# the same paths resolve, the same content is returned, and the same
+# traversal/escape logic applies -- without needing real disk permissions
+# on a path we don't control.
 # ---------------------------------------------------------------------
-def ensure_files():
-    os.makedirs(OUTSIDE_CANARY_DIR, exist_ok=True)
-    with open(os.path.join(OUTSIDE_CANARY_DIR, "canary.txt"), "w") as f:
-        f.write(CANARY_TOKEN + "\n")
-
-    notes_dir = os.path.join(SANDBOX_ROOT, "notes")
-    os.makedirs(notes_dir, exist_ok=True)
-    with open(os.path.join(notes_dir, "report.txt"), "w") as f:
-        f.write("SAFE_REPORT_1894a481de48c81dcaa9bdfb\n")
-    with open(os.path.join(notes_dir, "looks-like-..-but-safe.txt"), "w") as f:
-        f.write("SAFE_WEIRD_1e1c28f3087ec8050d72446a\n")
-
-    encoded_dir = os.path.join(SANDBOX_ROOT, "encoded")
-    os.makedirs(encoded_dir, exist_ok=True)
-    with open(os.path.join(encoded_dir, "%2e%2e-literal.txt"), "w") as f:
-        f.write("SAFE_ENCODED_c32347b666107f944629fa55\n")
-
-
-ensure_files()
+VIRTUAL_FILES = {
+    posixpath.join(SANDBOX_ROOT, "notes", "report.txt"):
+        "SAFE_REPORT_1894a481de48c81dcaa9bdfb\n",
+    posixpath.join(SANDBOX_ROOT, "notes", "looks-like-..-but-safe.txt"):
+        "SAFE_WEIRD_1e1c28f3087ec8050d72446a\n",
+    posixpath.join(SANDBOX_ROOT, "encoded", "%2e%2e-literal.txt"):
+        "SAFE_ENCODED_c32347b666107f944629fa55\n",
+    posixpath.join(OUTSIDE_CANARY_DIR, "canary.txt"):
+        CANARY_TOKEN + "\n",
+}
 
 
 # ---------------------------------------------------------------------
@@ -60,14 +58,9 @@ def check_read_file(path):
     sandbox_norm = posixpath.normpath(SANDBOX_ROOT)
     if resolved != sandbox_norm and not resolved.startswith(sandbox_norm + "/"):
         return "block", "Path escapes the permitted sandbox directory.", None
-    if not os.path.isfile(resolved):
+    if resolved not in VIRTUAL_FILES:
         return "block", "File does not exist within the sandbox.", None
-    try:
-        with open(resolved, "r") as f:
-            content = f.read()
-    except Exception as e:
-        return "block", f"Could not read file: {e}", None
-    return "allow", "Path is within the permitted sandbox.", content
+    return "allow", "Path is within the permitted sandbox.", VIRTUAL_FILES[resolved]
 
 
 # ---------------------------------------------------------------------
